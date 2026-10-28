@@ -388,7 +388,9 @@ SELECT a.ate_id,
        pkg_cobranza.fn_copago_paciente(a.ate_id)    AS copago
   FROM atencion a
   JOIN paciente p ON p.pac_run = a.pac_run
- WHERE pkg_cobranza.fn_edad_paciente(a.pac_run) >= pkg_cobranza.c_edad_adulto_mayor
+ -- Nota: una CONSTANTE de un package no se puede usar dentro de un SELECT
+ -- (Oracle responde PLS-221). Solo se usa en codigo PL/SQL, como en la Prueba 2.
+ WHERE pkg_cobranza.fn_edad_paciente(a.pac_run) >= 65
  ORDER BY edad DESC;
 
 -- Prueba 2: bloque anonimo que usa el procedimiento, la constante y la variable publica
