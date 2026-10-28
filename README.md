@@ -1087,7 +1087,7 @@ SELECT m.med_run,
 | `trg_valida_atencion` | BEFORE · fila | INSERT o UPDATE en `ATENCION` | Rechaza costos ≤ 0, fechas futuras y horas mal escritas (`RAISE_APPLICATION_ERROR`) |
 | `trg_calcula_pago` | BEFORE · fila | UPDATE de `fecha_pago` en `PAGO_ATENCION` | Al registrar un pago calcula solo los días de atraso, la multa y el monto a cancelar |
 | `trg_auditoria_pago` | AFTER · fila | INSERT, UPDATE o DELETE en `PAGO_ATENCION` | Guarda en `LOG_KETEKURA` el valor anterior (`:OLD`) y el nuevo (`:NEW`) |
-| `trg_log_resumen_medico` | AFTER · sentencia | INSERT en `RESUMEN_ATENCION_MEDICO` | Deja un solo registro por cada ejecución del resumen mensual |
+| `trg_log_resumen_medico` | AFTER · sentencia | DELETE en `RESUMEN_ATENCION_MEDICO` | El resumen mensual borra el período con un solo DELETE (51 filas): deja un solo registro en el log |
 
 **¿Por qué BEFORE o AFTER?** BEFORE sirve para validar o cambiar los valores de la fila antes de guardarla (`:NEW`). AFTER sirve para dejar registro cuando el cambio ya ocurrió. **¿Fila o sentencia?** A nivel de fila (`FOR EACH ROW`) se ejecuta una vez por cada registro afectado; a nivel de sentencia se ejecuta una sola vez, aunque la sentencia afecte 51 filas.
 
@@ -1109,8 +1109,8 @@ SELECT m.med_run,
 --       Al registrar un pago calcula solo los dias de atraso y la multa.
 --   4.3 trg_auditoria_pago      AFTER INSERT OR UPDATE OR DELETE ON pago_atencion (fila)
 --       Deja en LOG_KETEKURA el valor anterior y el nuevo de cada cambio.
---   4.4 trg_log_resumen_medico  AFTER INSERT ON resumen_atencion_medico   (sentencia)
---       Registra UNA vez cada ejecucion del resumen mensual de medicos.
+--   4.4 trg_log_resumen_medico  AFTER DELETE ON resumen_atencion_medico   (sentencia)
+--       Registra UNA vez cada reproceso del resumen mensual de medicos.
 -- =====================================================================
 
 SET SERVEROUTPUT ON;
@@ -1260,23 +1260,26 @@ END trg_auditoria_pago;
 -- ---------------------------------------------------------------------
 -- 4.4 BITACORA DEL RESUMEN MENSUAL  (AFTER, a nivel de SENTENCIA)
 -- No lleva FOR EACH ROW: se dispara UNA sola vez por sentencia, aunque
--- la sentencia inserte muchas filas. Asi queda un solo registro por cada
--- vez que se ejecuta el resumen de medicos (Req. 1.2 o Req. 3.2).
+-- la sentencia afecte muchas filas (o ninguna).
+-- El resumen mensual (Req. 1.2 y Req. 3.2) parte borrando el periodo con
+-- UN solo DELETE que elimina las 51 filas de los medicos: este trigger
+-- se dispara una vez y deja un solo registro en el log.
+-- (Si fuera FOR EACH ROW, dejaria 51 registros.)
 -- A nivel de sentencia NO se pueden usar :NEW ni :OLD.
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE TRIGGER trg_log_resumen_medico
-AFTER INSERT ON resumen_atencion_medico
+AFTER DELETE ON resumen_atencion_medico
 DECLARE
   v_cantidad NUMBER;
 BEGIN
   SELECT COUNT(*)
     INTO v_cantidad
-    FROM resumen_atencion_medico
-   WHERE TRUNC(fecha_proceso) = TRUNC(SYSDATE);
+    FROM resumen_atencion_medico;
 
   INSERT INTO log_ketekura (id_log, tabla, operacion, id_registro, detalle, usuario, fecha_log)
-  VALUES (sq_log.NEXTVAL, 'RESUMEN_ATENCION_MEDICO', 'INSERT', NULL,
-          'Se ejecuto el resumen mensual. Filas procesadas hoy: ' || v_cantidad,
+  VALUES (sq_log.NEXTVAL, 'RESUMEN_ATENCION_MEDICO', 'DELETE', NULL,
+          'Se reproceso un periodo del resumen mensual (1 sentencia DELETE). '
+          || 'Filas que quedan en la tabla: ' || v_cantidad,
           USER, SYSDATE);
 END trg_log_resumen_medico;
 /
@@ -1341,7 +1344,8 @@ SELECT ate_id, fecha_pago, dias_morosidad, monto_a_cancelar, obs_pago
   FROM pago_atencion
  WHERE ate_id = 553;
 
--- Prueba 5 (4.4): el resumen de 51 medicos deja UNA sola fila en el log
+-- Prueba 5 (4.4): julio ya se proceso en el Req. 3, asi que el resumen borra
+-- las 51 filas con UN DELETE -> el trigger de sentencia deja UNA sola fila en el log
 EXEC sp_resumen_atencion_medico(7, EXTRACT(YEAR FROM SYSDATE));
 
 -- Prueba 6 (4.3 y 4.4): lo que quedo registrado en la auditoria
